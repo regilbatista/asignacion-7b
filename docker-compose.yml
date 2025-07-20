@@ -1,0 +1,199 @@
+version: '3.8'
+
+services:
+  # Base de datos MySQL para ARS
+  mysql_ars:
+    image: mysql:8.0
+    container_name: ars_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: ars_humano
+      MYSQL_USER: ars_user
+      MYSQL_PASSWORD: secure_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_ars_data:/var/lib/mysql
+      - ./sql/mysql:/docker-entrypoint-initdb.d
+    networks:
+      - ars_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # Base de datos PostgreSQL para Unipago
+  postgres_unipago:
+    image: postgres:15
+    container_name: unipago_postgres
+    environment:
+      POSTGRES_DB: unipago_main
+      POSTGRES_USER: unipago_user
+      POSTGRES_PASSWORD: secure_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_unipago_data:/var/lib/postgresql/data
+      - ./sql/postgres:/docker-entrypoint-initdb.d
+    networks:
+      - ars_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unipago_user -d unipago_main"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Servidor SFTP para transferencia de archivos
+  sftp_server:
+    image: atmoz/sftp:latest
+    container_name: ars_sftp
+    ports:
+      - "2222:22"
+    volumes:
+      - sftp_data:/home/ars_export/upload
+      - sftp_data:/home/unipago_import/upload
+    command: >
+      ars_export:export_password:1001:1001:upload
+      unipago_import:import_password:1002:1002:upload
+    networks:
+      - ars_network
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep sshd > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Servicio para crear directorios SFTP necesarios - CORREGIDO
+  sftp_init:
+    image: atmoz/sftp:latest
+    container_name: sftp_init
+    depends_on:
+      - sftp_server
+    volumes:
+      - sftp_data:/shared
+    command: >
+      sh -c "
+      sleep 10 &&
+      mkdir -p /shared/afiliaciones &&
+      mkdir -p /shared/processed &&
+      mkdir -p /shared/errors &&
+      chmod 777 /shared/afiliaciones &&
+      chmod 777 /shared/processed &&
+      chmod 777 /shared/errors &&
+      chown -R 1001:1001 /shared/afiliaciones &&
+      chown -R 1001:1001 /shared/processed &&
+      chown -R 1002:1002 /shared/errors &&
+      echo 'Directorios SFTP creados exitosamente con permisos correctos' &&
+      echo 'Permisos finales:' &&
+      ls -la /shared/ &&
+      echo 'Verificando permisos detallados:' &&
+      ls -la /shared/processed &&
+      echo 'Usuario 1001 (ars_export) puede escribir en afiliaciones y processed' &&
+      echo 'Usuario 1002 (unipago_import) puede escribir en processed y errors'"
+    networks:
+      - ars_network
+    restart: "no"
+
+  # Sistema ARS Exportador
+  ars_exporter:
+    build:
+      context: ./ars
+      dockerfile: Dockerfile
+    container_name: ars_exporter
+    depends_on:
+      mysql_ars:
+        condition: service_healthy
+      sftp_server:
+        condition: service_healthy
+      sftp_init:
+        condition: service_completed_successfully
+    volumes:
+      - ./logs:/app/logs
+      - ars_temp:/app/temp
+    environment:
+      - NODE_ENV=development
+      - TZ=America/Santo_Domingo
+      - DB_HOST=mysql_ars
+      - SFTP_HOST=sftp_server
+    networks:
+      - ars_network
+    restart: unless-stopped
+
+  # Sistema Unipago Importador
+  unipago_importer:
+    build:
+      context: ./unipago
+      dockerfile: Dockerfile
+    container_name: unipago_importer
+    depends_on:
+      postgres_unipago:
+        condition: service_healthy
+      sftp_server:
+        condition: service_healthy
+      sftp_init:
+        condition: service_completed_successfully
+    volumes:
+      - ./logs:/app/logs
+      - unipago_temp:/app/temp
+    environment:
+      - NODE_ENV=development
+      - TZ=America/Santo_Domingo
+      - DB_HOST=postgres_unipago
+      - SFTP_HOST=sftp_server
+    networks:
+      - ars_network
+    restart: unless-stopped
+
+  # Adminer para gestión de bases de datos
+  adminer:
+    image: adminer:4.8.1
+    container_name: ars_adminer
+    ports:
+      - "8080:8080"
+    networks:
+      - ars_network
+    depends_on:
+      - mysql_ars
+      - postgres_unipago
+
+  # NUEVO: Servicio para corregir permisos SFTP periódicamente
+  sftp_permissions_fixer:
+    image: atmoz/sftp:latest
+    container_name: sftp_permissions_fixer
+    depends_on:
+      - sftp_server
+      - sftp_init
+    volumes:
+      - sftp_data:/shared
+    command: >
+      sh -c "
+      sleep 30 &&
+      echo 'Aplicando corrección de permisos SFTP...' &&
+      chmod 777 /shared/afiliaciones &&
+      chmod 777 /shared/processed &&
+      chmod 777 /shared/errors &&
+      chown 1001:1001 /shared/afiliaciones &&
+      chown 1002:1002 /shared/processed &&
+      chown 1002:1002 /shared/errors &&
+      echo 'Configurando permisos mixtos para processed (lectura/escritura)' &&
+      chmod 666 /shared/processed/* 2>/dev/null || true &&
+      echo 'Permisos SFTP corregidos exitosamente' &&
+      echo 'Estado final de directorios:' &&
+      ls -la /shared/ &&
+      echo 'Manteniendo contenedor activo para verificación...' &&
+      tail -f /dev/null"
+    networks:
+      - ars_network
+    restart: unless-stopped
+
+volumes:
+  mysql_ars_data:
+  postgres_unipago_data:
+  sftp_data:
+  ars_temp:
+  unipago_temp:
+
+networks:
+  ars_network:
+    driver: bridge

@@ -1,0 +1,32 @@
+{
+  "name": "unipago-importer",
+  "version": "1.0.0",
+  "description": "Sistema Importador Unipago - PostgreSQL REAL",
+  "main": "unipago_importer.js",
+  "scripts": {
+    "start": "node unipago_importer.js --monitor",
+    "import": "node unipago_importer.js --import",
+    "test": "node unipago_importer.js --test",
+    "config": "node unipago_importer.js --config",
+    "schedule": "node unipago_importer.js --schedule",
+    "dev": "nodemon unipago_importer.js --monitor"
+  },
+  "keywords": ["unipago", "importer", "postgresql", "sftp", "payments"],
+  "author": "Unipago Team",
+  "license": "ISC",
+  "dependencies": {
+    "csv-parser": "^3.2.0",
+    "mysql2": "^3.14.2",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.5",
+    "pg": "^8.16.3",
+    "ssh2-sftp-client": "^12.0.1",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
